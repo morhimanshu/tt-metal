@@ -25,36 +25,57 @@ void FlipDeviceOperation::validate_on_program_cache_miss(
     const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
     const auto& input_tensor = tensor_args.input_tensor;
     const auto& dims = operation_attributes.dims;
-    const auto& input_rank = input_tensor.logical_shape().rank();
+    const auto& input_shape = input_tensor.logical_shape();
+    const auto& input_rank = input_shape.rank();
 
-    TT_FATAL(input_rank <= 5, "Flip operation supports tensor with rank upto 5, got rank {}", input_rank);
-    TT_FATAL(is_device_tensor(input_tensor), "Input tensor must be on device");
+    //    TT_FATAL(input_rank <= 5, "Flip operation supports tensor with rank upto 5, got rank {}", input_rank); // test
+    //    this.
 
     for (auto dim : dims) {
-        auto norm_dim = input_tensor.logical_shape().get_normalized_index(dim);
+        auto norm_dim = input_shape.get_normalized_index(dim);
         TT_FATAL(
             norm_dim < input_rank, "Flip dimension {} is out of bonds for tensor with rank {}", norm_dim, input_rank);
     }
 
     std::set<int64_t> unique_dims;
     for (auto dim : dims) {
-        auto norm_dim = input_tensor.logicalshape().get_normalized_index(dim);
+        auto norm_dim = input_shape.get_normalized_index(dim);
         TT_FATEL(unique_dim.insert(norm_dim).second, "Duplicate dimension {} in flip.", dim);
     }
 
-    // TODO: support for sharded tensor similar to pytorch.
-
-    TT_FATAL(tensor_args.input_tensor.is_sharded() == false, "Flip operation doesn't support sharded tensors");
+    // TODO: Test the sharded tensor.
+    //    TT_FATAL(tensor_args.input_tensor.is_sharded() == false, "Flip operation doesn't support sharded tensors");
 }
-
-void FlipDeviceOperation::validate_on_program_cache_hit(
-    const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {}
 
 FlipDeviceOperation::spec_return_value_t FlipDeviceOperation::compute_output_specs(
     const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
+    if (tensor_args.optional_output_tensor.has_value()) {
+        return tensor_args.optional_output_tensor->tensor_spec();
+    }
+
+    SmallVector<uint32_t> shape;
+    const auto& input_tensor = tensor_args.input_tensor;
+    auto input_shape = input_tensor.logical_shape();
+    shape.reserve(input_shape.rank());
+    for (auto dim : operation_attributes.dims) {
+        shape.push_back(input_shape[dim]);
+    }
+
     return TensorSpec(
-        input_tensor.logical_shape();
-        TensorLayout(tensor_args.input_tensor.dtype(), tensor_args.input_tensor.layout(), operation_attributes_t.output_mem_config);
+        Shape(std::move(shape)),
+        tt::tt_metal::TensorLayout(
+            input_tensor.dtype(),
+            tt::tt_metal::PageConfig(input_tensor.layout()),
+            operation_attributes.output_mem_config));
+}
+
+tt::tt_metal::operation::OpPerformanceModelGeneral<FlipDeviceOperation::tensor_return_value_t>
+FlipDeviceOperation::create_op_performance_model(const tensor_args_t& inputs, const Tensor& output) {
+    const auto& input_tensor = inputs.input_tensor;
+    int ideal_dev_clock_cycles = common_tm_bw_model(input_tensor, output, false, 0, true);
+    tt::tt_metal::operation::OpPerformanceModelGeneral<tensor_return_value_t> result(
+        {input_tensor}, {output}, ideal_dev_clock_cycles);
+    return result;
 }
 
 FlipDeviceOperation::tensor_return_value FlipDeviceOperation::create_output_tensors(
