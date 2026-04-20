@@ -4,26 +4,8 @@
 
 #pragma once
 
-#include <variant>
-#include <optional>
-
-#include <tt_stl/span.hpp>
-
-#include "ttnn/core.hpp"
-#include "ttnn/device_operation.hpp"
-#include "ttnn/tensor/tensor.hpp"
-#include "ttnn/types.hpp"
-
-// TODO: experiment with both headers and find what works
-
-#include <cstdint>
-#include <utility>
-
-#include "ttnn/tensor/types.hpp"
 #include "flip_device_operation.hpp"
-#include "ttnn/device_operation.hpp"
 #include "ttnn/operations/data_movement/common/common.hpp"
-#include "ttnn/tensor/tensor_ops.hpp"
 
 namespace ttnn::operations::data_movement {
 
