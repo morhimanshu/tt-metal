@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: © 2025 Tenstorrent Inc.
+// SPDX-FileCopyrightText: © 2026 Tenstorrent Inc.
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,7 +9,6 @@
 #include "ttnn/operations/core/core.hpp"
 #include "ttnn/operations/data_movement/flip/device/flip_device_operation.hpp"
 #include "ttnn/operations/data_movement/tilize_with_val_padding/tilize_with_val_padding.hpp"
-#include "ttnn/operations/data_movement/untilize_with_unpadding/untilize_with_unpadding.hpp"
 #include "ttnn/operations/data_movement/untilize/untilize.hpp"
 #include "ttnn/operations/data_movement/slice/slice.hpp"
 #include "ttnn/operations/data_movement/common/common.hpp"
@@ -34,7 +33,7 @@ ttnn::Tensor flip_tiled(
     const auto logical_shape = input_tensor.logical_shape();
     const auto padded_shape = input_tensor.padded_shape();
 
-    // TILE -> RM
+    // TILE to RM layout
     auto rm_padded = ttnn::untilize(input_tensor, mem_conf);
 
     // Slice off padding if logical != padded
