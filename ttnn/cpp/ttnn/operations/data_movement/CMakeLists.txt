@@ -15,6 +15,7 @@ set_target_properties(
 # Globbing non-build files is acceptable for now because devs don't generate packages.
 file(
     GLOB_RECURSE kernels
+<<<<<<< HEAD
     bcast/device/kernels/*
     clone/device/kernels/*
     concat/device/kernels/*
@@ -47,6 +48,43 @@ file(
     transpose/device/kernels/*
     untilize/device/kernels/*
     untilize_with_unpadding/device/kernels/*
+=======
+    bcast/device/kernels/*.cpp
+    clone/device/kernels/*.cpp
+    concat/device/kernels/*.cpp
+    common/kernels/*.hpp
+    fill_pad/device/kernels/*.cpp
+    fill_pad/device/kernels/*.hpp
+    fill_rm/device/kernels/*.cpp
+    fold/device/kernels/*.cpp
+    gather/device/kernels/*.cpp
+    gather/device/kernels/*.hpp
+    copy/device/kernels/*.cpp
+    indexed_fill/device/kernels/*.cpp
+    moe_expert_token_remap/device/kernels/*.cpp
+    moe_routing_remap/device/kernels/*.cpp
+    non_zero_indices/device/kernels/*.cpp
+    move/device/kernels/*.cpp
+    pad/device/kernels/*.cpp
+    pad/device/kernels/*.hpp
+    permute/device/kernels/*.cpp
+    reshape_on_device/device/kernels/*.cpp
+    repeat/device/kernels/*.cpp
+    roll/device/kernels/*.cpp
+    reshape_view/device/device/*.cpp
+    scatter/device/kernels/*.hpp
+    sharded/device/kernels/*.cpp
+    sharded/reshard/device/kernels/*.cpp
+    sort/device/kernels/*.cpp
+    sort/device/kernels/*.hpp
+    split/device/kernels/*.cpp
+    slice/device/kernels/*.cpp
+    tilize/device/kernels/*.cpp
+    tilize_with_val_padding/device/kernels/*.cpp
+    transpose/device/kernels/*.cpp
+    untilize/device/kernels/*.cpp
+    untilize_with_unpadding/device/kernels/*.cpp
+>>>>>>> 4f5aae6531a ([skip ci] Cleanup: Fix CMake GLOB_RECURSE to filter by extension (#44791))
 )
 target_sources(
     ttnn_op_data_movement
