@@ -1220,7 +1220,10 @@ class Attention(LightweightModule):
 
         if chunk_start_idx is not None:
             if self.sliding_window is not None:
-                raise NotImplementedError("Sliding window not supported for chunked prefill SDPA")
+                raise NotImplementedError(
+                    "Sliding window not supported for chunked prefill SDPA. "
+                    "Prefill in a single chunk, e.g. MAX_PREFILL_CHUNK_SIZE=8."
+                )
             if isinstance(chunk_start_idx, ttnn.Tensor):
                 attn_output_84SD = ttnn.transformer.chunked_scaled_dot_product_attention(
                     input_tensor_q=q_heads_1QSD_8b,

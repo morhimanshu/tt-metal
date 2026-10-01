@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: © 2023 Tenstorrent USA, Inc.
+# SPDX-FileCopyrightText: © 2025 Tenstorrent USA, Inc.
 
 # SPDX-License-Identifier: Apache-2.0
 import ttnn
@@ -7,32 +7,14 @@ from models.common.utility_functions import copy_to_buffer
 from models.tt_transformers.tt.common import Mode
 
 TILE = 32
-SHARD_HEIGHT = TILE  # Current ttnn.rms_norm implementation requires shard height to be a single tile
+SHARD_HEIGHT = TILE  # Current ttnn.layer_norm implementation requires shard height to be a single tile
 
 
-class RMSNorm(LightweightModule):
+class LayerNorm(LightweightModule):
     """
-    RMSNorm supporting replication over a MeshDevice and sharding within devices.
+    Mean-centred LayerNorm without bias, as used by Cohere2.
 
-    This class implements a Root Mean Square Normalization (RMSNorm) that can be
-    distributed across multiple devices and cores. If the `device` parameter is a
-    MeshDevice, the weights and computations are replicated across all devices in
-    the mesh. Expects an interleaved input tensor, can optionally output a sharded tensor.
-
-    Args:
-        device: The device or MeshDevice on which to perform the computations.
-        state_dict: The state dictionary containing the model parameters.
-        dim: Input dimension (e.g. model hidden dimension size).
-        layer_num: The layer number to determine the weight key in the state dictionary.
-        weight_key: The key for retrieving the weight from the state dictionary.
-        weight_cache_path: Optional path for caching the tilized weights.
-        weight_memory_config: Configuration for the weight memory, default is DRAM_MEMORY_CONFIG.
-        weight_dtype: The data type for the tensors, bfp8_b hits >0.999 PCC in the models we tested.
-        model_config: Optional configuration dictionary for the model.
-        eps (float): Small value to avoid division by zero in normalization, default is 1e-05.
-
-    If model_config is provided, it must specify SHARDED_NORM_INPUT_MEMCFG, SHARDED_NORM_PRGM_CFG
-    and SHARDED_NORM_OUTPUT_MEMCFG. If not provided, default configurations will be generated.
+    Same interface as models.common.rmsnorm.RMSNorm so DistributedNorm wraps either.
     """
 
     def __init__(
@@ -122,24 +104,8 @@ class RMSNorm(LightweightModule):
         )
 
     def update(self, *, weight: ttnn.Tensor) -> None:
-        """In-place replace the RMSNorm gamma via ``ttnn.copy``.
-
-        HF-format input: ``weight`` is HF ``...norm.weight``, shape
-        ``(1, 1, 1, dim)``, bf16, TILE, DRAM-interleaved, replicated.
-
-        ``copy_to_buffer`` reshapes to the storage shape
-        ``(1, 1, dim // SHARD_HEIGHT, SHARD_HEIGHT)`` and TILE -> ROW_MAJOR to
-        match ``self.weight``. ``add_unit_offset`` is not supported (see
-        assert): the caller must ship a gamma that already includes the +1.
-
-        When ``self.weight_distributed`` (the column-sharded mirror) exists it's
-        kept in sync on device: project ``self.weight`` into the sharded layout
-        via ``ttnn.mesh_partition`` (the inverse of the constructor's
-        ``ShardTensor2dMesh(dims=(None, 2))``, hence ``dim=2, cluster_axis=1``)
-        and ``ttnn.copy`` into it. Both buffers keep their address, so captured
-        traces and the prefetcher's recorded addresses stay valid.
-        """
-        assert not self.add_unit_offset, "RMSNorm.update does not support add_unit_offset=True"
+        """In-place replace the LayerNorm gamma via ``ttnn.copy``. See RMSNorm.update."""
+        assert not self.add_unit_offset, "LayerNorm.update does not support add_unit_offset=True"
         copy_to_buffer(weight, self.weight, self.weight.dtype)
 
         if getattr(self, "weight_distributed", None) is not None:
@@ -173,19 +139,19 @@ class RMSNorm(LightweightModule):
         # Optional L1 placement for the distributed 3-op outputs (pre/gather/post); None -> DRAM default.
         distributed_out_mc = norm_config.get("distributed_output_mem_config") if norm_config else None
 
-        # If input is sharded do sharded RMSNorm and optionally return sharded output
+        # If input is sharded do sharded LayerNorm and optionally return sharded output
         program_config = sharded_program_config if in_sharded else None
         memory_config = sharded_output_config if out_sharded else None
         distributed = self.is_distributed and self.is_distributed(mode)
         weight = self.weight_distributed if distributed else self.weight
 
         if in_sharded:
-            assert not distributed, "Distributed RMSNorm does not support sharded inputs"
+            assert not distributed, "Distributed LayerNorm does not support sharded inputs"
         else:
-            assert not out_sharded, "Non-sharded version of RMSNorm cannot output a sharded tensor"
+            assert not out_sharded, "Non-sharded version of LayerNorm cannot output a sharded tensor"
 
         if distributed:
-            x = self._distributed_rmsnorm(
+            x = self._distributed_layer_norm(
                 x,
                 epsilon=self.eps,
                 weight=weight,
@@ -193,10 +159,11 @@ class RMSNorm(LightweightModule):
                 output_memory_config=distributed_out_mc,
             )
         else:
-            x = ttnn.rms_norm(
+            x = ttnn.layer_norm(
                 x,
                 epsilon=self.eps,
                 weight=weight,
+                bias=None,
                 program_config=program_config,
                 memory_config=memory_config,
                 compute_kernel_config=self.compute_kernel_config_hifi2,
@@ -209,7 +176,7 @@ class RMSNorm(LightweightModule):
                 x = ttnn.to_memory_config(x, output_mem_config)
             return x
 
-    def _distributed_rmsnorm(
+    def _distributed_layer_norm(
         self,
         inp,
         epsilon=None,
@@ -219,15 +186,15 @@ class RMSNorm(LightweightModule):
         compute_kernel_config=None,
         output_memory_config=None,
     ):
-        assert program_config is None, "Distributed RMSNorm does not support sharded inputs"
-        assert memory_config is None, "Distributed RMSNorm does not support sharded outputs"
-        assert self.tt_ccl is not None, "Distributed RMSNorm requires tt_ccl"
+        assert program_config is None, "Distributed LayerNorm does not support sharded inputs"
+        assert memory_config is None, "Distributed LayerNorm does not support sharded outputs"
+        assert self.tt_ccl is not None, "Distributed LayerNorm requires tt_ccl"
 
         # Interleaved output placement for the 3 ops; default DRAM (matches the prior hardcoded behavior).
         mc = output_memory_config if output_memory_config is not None else ttnn.DRAM_MEMORY_CONFIG
 
-        # Run distributed rmsnorm part 1
-        tt_stats = ttnn.rms_norm_pre_all_gather(
+        # Run distributed layernorm part 1
+        tt_stats = ttnn.layer_norm_pre_all_gather(
             inp, compute_kernel_config=compute_kernel_config, dtype=ttnn.bfloat16, memory_config=mc
         )
         # AllGather stats
@@ -244,8 +211,8 @@ class RMSNorm(LightweightModule):
             num_workers_per_link=2,
             num_buffers_per_channel=2,
         )
-        # Run distributed rmsnorm part 2
-        tt_out = ttnn.rms_norm_post_all_gather(
+        # Run distributed layernorm part 2
+        tt_out = ttnn.layer_norm_post_all_gather(
             inp,
             tt_stats,
             epsilon=epsilon,
