@@ -15,40 +15,6 @@ set_target_properties(
 # Globbing non-build files is acceptable for now because devs don't generate packages.
 file(
     GLOB_RECURSE kernels
-<<<<<<< HEAD
-    bcast/device/kernels/*
-    clone/device/kernels/*
-    concat/device/kernels/*
-    common/kernels/*
-    fill_pad/device/kernels/*
-    fill_rm/device/kernels/*
-    flip/device/kernels/*
-    fold/device/kernels/*
-    gather/device/kernels/*
-    copy/device/kernels/*
-    indexed_fill/device/kernels/*
-    moe_expert_token_remap/device/kernels/*
-    moe_routing_remap/device/kernels/*
-    non_zero_indices/device/kernels/*
-    move/device/kernels/*
-    pad/device/kernels/*
-    permute/device/kernels/*
-    reshape_on_device/device/kernels/*
-    repeat/device/kernels/*
-    roll/device/kernels/*
-    reshape_view/device/device/*
-    scatter/device/kernels/*
-    sharded/device/kernels/*
-    sharded/reshard/device/kernels/*
-    sort/device/kernels/*
-    split/device/kernels/*
-    slice/device/kernels/*
-    tilize/device/kernels/*
-    tilize_with_val_padding/device/kernels/*
-    transpose/device/kernels/*
-    untilize/device/kernels/*
-    untilize_with_unpadding/device/kernels/*
-=======
     bcast/device/kernels/*.cpp
     clone/device/kernels/*.cpp
     concat/device/kernels/*.cpp
@@ -92,7 +58,6 @@ file(
     untilize/codegen/kernels/*.cpp
     untilize/codegen/kernels/*.h
     untilize_with_unpadding/device/kernels/*.cpp
->>>>>>> 4f5aae6531a ([skip ci] Cleanup: Fix CMake GLOB_RECURSE to filter by extension (#44791))
 )
 target_sources(
     ttnn_op_data_movement
