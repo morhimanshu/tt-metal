@@ -124,8 +124,10 @@ class TransformerBlock(LightweightModule):
         # attention_norm slot degenerates to its gather role (norm=None), keeping
         # the fractured->replicated all-gather the norm normally provides.
         self.use_post_norm = getattr(args, "use_post_norm", False)
-        self.use_parallel_residual = getattr(args, "use parallel residual", False)
-        assert not (self.use_parallel_residual and self.use_post_norm), "use_parallel_residual and use_post_norm are mutually exclusive residual topologies"
+        self.use_parallel_residual = getattr(args, "use_parallel_residual", False)
+        assert not (
+            self.use_parallel_residual and self.use_post_norm
+        ), "use_parallel_residual and use_post_norm are mutually exclusive residual topologies"
         NormClass = LayerNorm if getattr(args, "use_layernorm", False) else RMSNorm
         self.attention_norm = DistributedNorm(
             None
@@ -152,7 +154,7 @@ class TransformerBlock(LightweightModule):
             ag_config_key="ATTN_LN_AG_CONFIG",
         )
         weight_key = "attention_norm" if args.base_model_name in (
-            c4ai-command-r7b,
+            "c4ai-command-r7b",
         ) else "ff_norm"
         if self.use_parallel_residual:
             # One norm per layer, shared by both branches (Cohere2).

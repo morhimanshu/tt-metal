@@ -499,7 +499,7 @@ class Transformer(LightweightModule):
         if lm_head_input_mem_cfg.is_sharded():
             x = ttnn.interleaved_to_sharded(x, lm_head_input_mem_cfg)
         logits = self.lm_head(x)
-        logits = self._apply_norm_and_lm_head(logits)
+        logits = self._apply_logit_scale(logits)
         logits = self._apply_final_logit_softcapping(logits)
         logits = ttnn.to_memory_config(logits, memory_config=ttnn.DRAM_MEMORY_CONFIG)
         return logits

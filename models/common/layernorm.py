@@ -185,7 +185,7 @@ class LayerNorm(LightweightModule):
             assert not out_sharded, "Non-sharded version of LayerNorm cannot output a sharded tensor"
 
         if distributed:
-            x = self._distributed_rmsnorm(
+            x = self._distributed_layer_norm(
                 x,
                 epsilon=self.eps,
                 weight=weight,
@@ -210,7 +210,7 @@ class LayerNorm(LightweightModule):
                 x = ttnn.to_memory_config(x, output_mem_config)
             return x
 
-    def _distributed_rmsnorm(
+    def _distributed_layer_norm(
         self,
         inp,
         epsilon=None,
@@ -227,8 +227,8 @@ class LayerNorm(LightweightModule):
         # Interleaved output placement for the 3 ops; default DRAM (matches the prior hardcoded behavior).
         mc = output_memory_config if output_memory_config is not None else ttnn.DRAM_MEMORY_CONFIG
 
-        # Run distributed rmsnorm part 1
-        tt_stats = ttnn.rms_norm_pre_all_gather(
+        # Run distributed layernorm part 1
+        tt_stats = ttnn.layer_norm_pre_all_gather(
             inp, compute_kernel_config=compute_kernel_config, dtype=ttnn.bfloat16, memory_config=mc
         )
         # AllGather stats
@@ -245,8 +245,8 @@ class LayerNorm(LightweightModule):
             num_workers_per_link=2,
             num_buffers_per_channel=2,
         )
-        # Run distributed rmsnorm part 2
-        tt_out = ttnn.rms_norm_post_all_gather(
+        # Run distributed layernorm part 2
+        tt_out = ttnn.layer_norm_post_all_gather(
             inp,
             tt_stats,
             epsilon=epsilon,

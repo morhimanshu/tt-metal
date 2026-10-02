@@ -403,7 +403,6 @@ def tt_distributed_rmsnorm(inp, epsilon, gamma, mesh_device, tt_ccl, compute_ker
 
     return tt_out
 
-
 def tt_sharded_distributed_rmsnorm(
     inp,
     epsilon,
@@ -468,6 +467,9 @@ def tt_sharded_distributed_rmsnorm(
     )
     tt_stats.deallocate(True)
 
+    return tt_out
+
+
 def tt_distributed_layernorm(inp, epsilon, gamma, mesh_device, tt_ccl, compute_kernel_config, num_links=None):
     """
     Perform distributed Mean-centered Layer normalization across devices.
@@ -488,8 +490,8 @@ def tt_distributed_layernorm(inp, epsilon, gamma, mesh_device, tt_ccl, compute_k
     if num_links is None:
         num_links = tt_ccl.get_num_links(cluster_axis=1)
 
-    # Run distributed rmsnorm part 1
-    tt_stats = ttnn.rms_norm_pre_all_gather(inp, compute_kernel_config=compute_kernel_config, dtype=ttnn.bfloat16)
+    # Run distributed layernorm part 1
+    tt_stats = ttnn.layer_norm_pre_all_gather(inp, compute_kernel_config=compute_kernel_config, dtype=ttnn.bfloat16)
     padded_shape = (1, 1, inp.shape[-2], 32)
     tt_stats = ttnn.reshape(tt_stats, ttnn.Shape(padded_shape))  # TODO: Figure out why we need this
     tt_stats_gathered = tt_all_gather(
@@ -504,8 +506,8 @@ def tt_distributed_layernorm(inp, epsilon, gamma, mesh_device, tt_ccl, compute_k
 
     tt_stats.deallocate(True)
 
-    # Run distributed rmsnorm part 2
-    tt_out = ttnn.rms_norm_post_all_gather(
+    # Run distributed layernorm part 2
+    tt_out = ttnn.layer_norm_post_all_gather(
         inp, tt_stats_gathered, epsilon=epsilon, weight=gamma, compute_kernel_config=compute_kernel_config
     )
 
@@ -527,7 +529,7 @@ def tt_sharded_distributed_layernorm(
     num_links=None,
 ):
     """
-    Perform sharded distributed RMS normalization across devices.
+    Perform sharded distributed Layer normalization across devices.
 
     Args:
         inp: Input tensor.
@@ -550,8 +552,8 @@ def tt_sharded_distributed_layernorm(
 
     inp = ttnn.to_memory_config(inp, memory_config=ln_sharded_input_memcfg)
 
-    # Run distributed rmsnorm part 1
-    tt_stats = ttnn.rms_norm_pre_all_gather(inp, program_config=ln_sharded_progcfg)
+    # Run distributed layernorm part 1
+    tt_stats = ttnn.layer_norm_pre_all_gather(inp, program_config=ln_sharded_progcfg)
 
     # All gather stats
     tt_stats = ttnn.experimental.all_gather_async(
@@ -569,8 +571,8 @@ def tt_sharded_distributed_layernorm(
         num_buffers_per_channel=2,
     )
 
-    # Run distributed rmsnorm part 2
-    tt_out = ttnn.rms_norm_post_all_gather(
+    # Run distributed layernorm part 2
+    tt_out = ttnn.layer_norm_post_all_gather(
         inp,
         epsilon=epsilon,
         weight=gamma,

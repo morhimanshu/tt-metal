@@ -137,8 +137,8 @@ class DistributedNorm(LightweightModule):
                     tt_ccl=self.tt_ccl,
                     compute_kernel_config=self.ln_cfg,
                 )
-                if mode == Mode.DECODE:
-                    return tt_sharded_distributed_rmsnorm(
+            if mode == Mode.DECODE:
+                return tt_sharded_distributed_rmsnorm(
                     x,
                     epsilon=self.norm.eps,
                     gamma=self.norm.weight_distributed,
