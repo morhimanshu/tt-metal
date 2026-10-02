@@ -17,6 +17,7 @@ import torch
 from loguru import logger
 
 import ttnn
+from models.common.layernorm import LayerNorm
 from models.common.utility_functions import hf_cache_to_legacy, is_blackhole, is_wormhole_b0, nearest_32
 from models.common.weight_cache import WEIGHT_CACHE_FORMAT_VERSION as _WC_FORMAT_VERSION
 from models.common.weight_cache import WEIGHT_CACHE_MARKER as _WC_MARKER
@@ -673,6 +674,15 @@ class ModelArgs:
         # rope setup; use_global_nope neutralizes the global setup's cos/sin to identity.
         self.rope_scaling_local = None
         self.use_global_nope = False
+        # LayerNorm instead of RMSNorm, and a shared norm for both residual branches
+        # (out = x + attn(LN(x)) + mlp(LN(x))). Cohere2 only.
+        self.use_layernorm = False
+        self.use_parallel_residual = False
+        # Skip the HF->Meta q/k reverse_permute while keeping Meta rope. Cohere2's
+        # rotate_half already pairs (2i, 2i+1), so its q/k rows need no permuting.
+        self.skip_qkv_permute = False
+        # Overrides the per-model prefill chunk table; see _set_model_specific_params.
+        self.max_prefill_chunk_size_override = None
         # Text-only port of a multimodal checkpoint: keeps is_multimodal False so the
         # text pipeline (AutoModel class choice aside) is used end-to-end.
         self.force_text_only = False
@@ -682,6 +692,8 @@ class ModelArgs:
         # omitting attn softcap at inference has only minor effect. See final-logit
         # application in Transformer._apply_final_logit_softcapping.
         self.final_logit_softcapping = None
+        # Logit scaling (Cohere2). None => disabled.
+        self.logit_scale = None
         self.model_type = None
         # Decode-SDPA tuning. Architecture-specific overrides are applied once in
         # _set_model_specific_params(); these defaults preserve existing behaviour for
@@ -744,6 +756,12 @@ class ModelArgs:
             self.trust_remote_code_hf = True
 
         self._set_hf_params(self.CKPT_DIR)
+        # Unpermuted q/k weights differ from the default cache contents, so they need
+        # their own dir. skip_qkv_permute is only known after reading config.json.
+        if self.skip_qkv_permute:
+            self.CACHE_PATH = os.path.join(self.CACHE_PATH, "no_qkv_permute")
+            self.model_cache_path = Path(self.CACHE_PATH)
+            logger.info(f"Cache directory: {self.CACHE_PATH}")
 
         # Set the max number of tokens for each prefill chunk based on the model and device
         self.max_prefill_chunk_size = self.get_max_prefill_chunk_size()
@@ -2574,6 +2592,8 @@ class ModelArgs:
         # Set the max number of tokens for each prefill chunk based on the model and device
         max_prefill_chunk_size_div1024 = os.getenv("MAX_PREFILL_CHUNK_SIZE")
         if max_prefill_chunk_size_div1024 is None:
+             if self.max_prefill_chunk_size_override is not None:
+             return self.max_prefill_chunk_size_override
             # TODO Improve this to be more general to more devices and models
             MAX_PREFILL_CHUNK_SIZES_DIV1024 = {
                 "Llama-3.2-1B": {"N150": 128, "N300": 128, "T3K": 128, "TG": 128, "P150x4": 128},
@@ -2890,6 +2910,15 @@ class ModelArgs:
             # itself drops mtp.* on load (_keys_to_ignore_on_load_unexpected).
             self.force_text_only = True
             self.is_multimodal = False
+        if self.model_type is not None and str(self.model_type).lower() == "cohere2":
+            self.use_layernorm = True
+            self.use_parallel_residual = True
+            self.skip_qkv_permute = True
+            self.rope_scaling_local = self.rope_scaling
+            self.rope_scaling = None
+            self.use_global_nope = True
+            # Sliding layers can't do chunked prefill and 3 of every 4 layers slide.
+            self.max_prefill_chunk_size_override = math.ceil((self.max_context_len or 8192) / 1024) * 1024
 
     def _set_params_from_dict(self, config):
         eos_token_id = config.get("eos_token_id", None)
@@ -3059,6 +3088,7 @@ class ModelArgs:
         # Attn-score softcapping is not applied (see __init__ comment); only the
         # final-logit cap is consumed, via Transformer._apply_final_logit_softcapping.
         self.final_logit_softcapping = text_config.get("final_logit_softcapping", None)
+        self.logit_scale = text_config.get("logit_scale", None)
 
         # Configurable MLP activation type
         self.mlp_activation_type = self._get_hidden_activation_type(text_config)
@@ -3585,7 +3615,7 @@ class ModelArgs:
         if self.is_multimodal:
             state_dict = standardize_hf_keys_multimodal(state_dict)
             if self.is_llama_vision():
-                if self.use_hf_rope:
+                if self.use_hf_rope or self.skip_qkv_permute:
                     # For HF-style RoPE: skip QKV format conversion
                     state_dict = convert_hf_to_meta_mllama_no_qkv_permute(state_dict, self.head_dim, self.hf_config)
                 else:
