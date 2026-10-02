@@ -197,7 +197,7 @@ class LayerNorm(LightweightModule):
                 x,
                 epsilon=self.eps,
                 weight=weight,
-                bias=bias,
+                bias=None,
                 program_config=program_config,
                 memory_config=memory_config,
                 compute_kernel_config=self.compute_kernel_config_hifi2,
