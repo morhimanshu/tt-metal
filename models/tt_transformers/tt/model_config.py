@@ -2592,8 +2592,8 @@ class ModelArgs:
         # Set the max number of tokens for each prefill chunk based on the model and device
         max_prefill_chunk_size_div1024 = os.getenv("MAX_PREFILL_CHUNK_SIZE")
         if max_prefill_chunk_size_div1024 is None:
-             if self.max_prefill_chunk_size_override is not None:
-             return self.max_prefill_chunk_size_override
+            if self.max_prefill_chunk_size_override is not None:
+                return self.max_prefill_chunk_size_override
             # TODO Improve this to be more general to more devices and models
             MAX_PREFILL_CHUNK_SIZES_DIV1024 = {
                 "Llama-3.2-1B": {"N150": 128, "N300": 128, "T3K": 128, "TG": 128, "P150x4": 128},

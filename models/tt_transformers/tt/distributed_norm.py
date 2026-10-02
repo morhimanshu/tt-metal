@@ -148,7 +148,7 @@ class DistributedNorm(LightweightModule):
                     ln_sharded_progcfg=self.ln_prg_cfg,
                     ln_sharded_stats_memcfg=self.ln_sharded_stats_memcfg,
                 )
-             return tt_distributed_rmsnorm(
+            return tt_distributed_rmsnorm(
                 x,
                 epsilon=self.norm.eps,
                 gamma=self.norm.weight_distributed,
