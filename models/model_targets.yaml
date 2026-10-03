@@ -581,6 +581,32 @@ targets:
             accuracy: {}
             owner_id: U03PUAKE719 # Miguel Tairum Cruz
             team: models
+  c4ai-command-r7b:
+    aliases: ["c4ai-command-r7b-12-2024", "CohereLabs/c4ai-command-r7b-12-2024"]
+    skus:
+      wh_n150:
+        entries:
+          # Seeded from local N150 bringup run (performance-batch-1, 128-token
+          # prefill, 200-token decode): TTFT 105.99ms, 25.7 tok/s/u.
+          - batch_size: 1
+            seq_len: 128
+            status: active
+            perf:
+              prefill_time_to_first_token: 106.0
+              decode_t/s: 25.7
+              decode_t/s/u: 25.7
+              tolerance: 0.2
+            accuracy: {}
+            owner_id: TODO # Command-R7B bringup owner — replace with Slack member ID
+            team: models
+          - batch_size: 1
+            seq_len: 512
+            status: TODO
+            perf: {}
+            accuracy: {}
+            note: "TODO: populate top1/top5 after first ci-token-matching run with c4ai-command-r7b-12-2024.refpt"
+            owner_id: TODO # Command-R7B bringup owner — replace with Slack member ID
+            team: models
   llama3.1-70b:
     aliases: ["Llama-3.1-70B", "meta-llama/Llama-3.1-70B-Instruct"]
     skus:
