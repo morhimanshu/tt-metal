@@ -3061,6 +3061,25 @@ class ModelArgs:
             self.layer_types = ["sliding_attention" if (i % 2 == 0) else "full_attention" for i in range(self.n_layers)]
             self.sliding_window_pattern = [lt == "sliding_attention" for lt in self.layer_types]
 
+        # Cohere2 (Command-R7B) checkpoints carry no `layer_types` list; HF
+        # Cohere2Config synthesizes 3 sliding + 1 full per sliding_window_pattern
+        # (local-first). Replicate exactly so sliding layers take local rotary
+        # and every pattern-th layer stays NoPE. Without this, layer_types stays
+        # None, is_sliding is False everywhere, and use_global_nope silences
+        # rotary on ALL layers instead of just the full ones.
+        if (
+            self.model_type is not None
+            and str(self.model_type).lower() == "cohere2"
+            and self.sliding_window is not None
+            and self.layer_types is None
+        ):
+            _sw_pattern = text_config.get("sliding_window_pattern", 4) or 4
+            self.layer_types = [
+                "sliding_attention" if bool((i + 1) % _sw_pattern) else "full_attention"
+                for i in range(self.n_layers)
+            ]
+            self.sliding_window_pattern = [lt == "sliding_attention" for lt in self.layer_types]
+
         # RoPE params (transformers 5.x nests these under `rope_parameters`)
         self.rope_theta = get_rope_theta(text_config)
         self.rope_theta_local = get_rope_local_base_freq(text_config)
