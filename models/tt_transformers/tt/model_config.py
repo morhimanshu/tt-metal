@@ -4367,7 +4367,13 @@ class ModelArgs:
             model.model = model.model.language_model
         model.model.layers = model.model.layers[: self.n_layers]
         if wrap:
-            wrapper = HfModelWrapper(model, self.head_dim, config=self.hf_config, use_hf_rope=self.use_hf_rope)
+            wrapper = HfModelWrapper(
+                model,
+                self.head_dim,
+                config=self.hf_config,
+                use_hf_rope=self.use_hf_rope,
+                skip_qkv_permute=self.skip_qkv_permute,
+            )
             return wrapper
         else:
             return model
@@ -4629,6 +4635,7 @@ class ModelArgs:
             model.model.rotary_emb if use_position_embeddings else None,
             rotary_emb_local,
             self.use_hf_rope,
+            skip_qkv_permute=self.skip_qkv_permute,
         )
         return wrapper
 
@@ -4641,6 +4648,7 @@ class ModelArgs:
             self.head_dim,
             model.model.rotary_emb if use_position_embeddings else None,
             use_hf_rope=self.use_hf_rope,
+            skip_qkv_permute=self.skip_qkv_permute,
         )
         return wrapper
 
@@ -4743,7 +4751,7 @@ class ModelArgs:
 
 
 class HfAttentionWrapper:
-    def __init__(self, attention, head_dim, rotary_emb, use_hf_rope=False, rope_layer_type=None):
+    def __init__(self, attention, head_dim, rotary_emb, use_hf_rope=False, rope_layer_type=None, skip_qkv_permute=False):
         from transformers import DynamicCache
 
         super().__init__()
@@ -4752,6 +4760,8 @@ class HfAttentionWrapper:
         self.head_dim = head_dim
         self.rotary_emb = rotary_emb
         self.use_hf_rope = use_hf_rope
+        # Interleaved-native Q/K (e.g. Cohere2) skip the Meta<->HF permute too.
+        self.skip_qkv_permute = skip_qkv_permute
         # transformers 5.x Gemma3 rotary picks `{layer_type}_inv_freq`. When the caller chose a
         # specific rope module (e.g. global vs local), pin the layer_type to match it instead of
         # the attention layer's own type; otherwise fall back to the attention's layer_type.
@@ -4813,7 +4823,7 @@ class HfAttentionWrapper:
             fuse_qkv = hasattr(self.attention, "qkv_proj")
         except:
             fuse_qkv = False
-        if self.use_hf_rope:
+        if self.use_hf_rope or self.skip_qkv_permute:
             return self.attention.load_state_dict(convert_meta_to_hf_no_qkv_permute(state_dict, fuse_qkv))
         else:
             return self.attention.load_state_dict(convert_meta_to_hf(state_dict, self.head_dim, fuse_qkv))
@@ -4823,7 +4833,7 @@ class HfAttentionWrapper:
         [(k, v)] = [(kk, vv) for (kk, vv) in hf_cache_to_legacy(self.past_key_value) if kk is not None]
         hf_k = k.permute(0, 2, 1, 3)  # match meta-style reference which uses (batch_size, seq, n_kv_heads, head_dim)
 
-        if self.use_hf_rope:
+        if self.use_hf_rope or self.skip_qkv_permute:
             # No transformation needed for HF-style RoPE
             return hf_k
 
@@ -4848,7 +4858,7 @@ class HfAttentionWrapper:
 
 
 class HfDecoderWrapper:
-    def __init__(self, decoder, head_dim, rotary_emb, rotary_emb_local=None, use_hf_rope=False):
+    def __init__(self, decoder, head_dim, rotary_emb, rotary_emb_local=None, use_hf_rope=False, skip_qkv_permute=False):
         from transformers import DynamicCache
 
         self.decoder = decoder
@@ -4857,6 +4867,8 @@ class HfDecoderWrapper:
         self.rotary_emb_local = rotary_emb_local
         self.past_key_values = DynamicCache()
         self.use_hf_rope = use_hf_rope
+        # Interleaved-native Q/K (e.g. Cohere2) skip the Meta<->HF permute too.
+        self.skip_qkv_permute = skip_qkv_permute
 
     def forward(self, x, start_pos, freqs_cis_i, mask=None):
         position_ids = torch.tensor([list(range(start_pos, start_pos + x.shape[1]))] * x.shape[0])
@@ -4934,7 +4946,7 @@ class HfDecoderWrapper:
             fuse_mlp = hasattr(self.decoder.mlp, "gate_up_proj")
         except:
             fuse_qkv, fuse_mlp = False, False
-        if self.use_hf_rope:
+        if self.use_hf_rope or self.skip_qkv_permute:
             return self.decoder.load_state_dict(convert_meta_to_hf_no_qkv_permute(state_dict, fuse_qkv, fuse_mlp))
         else:
             return self.decoder.load_state_dict(convert_meta_to_hf(state_dict, self.head_dim, fuse_qkv, fuse_mlp))
@@ -4944,7 +4956,7 @@ class HfDecoderWrapper:
         [(k, v)] = [(kk, vv) for (kk, vv) in hf_cache_to_legacy(self.past_key_values) if kk is not None]
         hf_k = k.permute(0, 2, 1, 3)  # match meta-style reference which uses (batch_size, seq, n_kv_heads, head_dim)
 
-        if self.use_hf_rope:
+        if self.use_hf_rope or self.skip_qkv_permute:
             # No transformation needed for HF-style RoPE
             return hf_k
 
@@ -4969,7 +4981,7 @@ class HfDecoderWrapper:
 
 
 class HfModelWrapper:
-    def __init__(self, model, head_dim, config=None, use_hf_rope=False):
+    def __init__(self, model, head_dim, config=None, use_hf_rope=False, skip_qkv_permute=False):
         from transformers import DynamicCache
 
         self.model = model
@@ -4977,6 +4989,8 @@ class HfModelWrapper:
         self.config = config
         self.past_key_values = DynamicCache()
         self.use_hf_rope = use_hf_rope
+        # Interleaved-native Q/K (e.g. Cohere2) skip the Meta<->HF permute too.
+        self.skip_qkv_permute = skip_qkv_permute
 
     def forward(self, inputs_embeds, start_pos, mode="decode"):
         position_ids = torch.tensor(
@@ -5018,7 +5032,7 @@ class HfModelWrapper:
             fuse_mlp = hasattr(self.model.model.layers[0].mlp, "gate_up_proj")
         except:
             fuse_qkv, fuse_mlp = False, False
-        if self.use_hf_rope:
+        if self.use_hf_rope or self.skip_qkv_permute:
             return self.model.load_state_dict(
                 convert_meta_to_hf_no_qkv_permute(state_dict, fuse_qkv, fuse_mlp, self.config)
             )
@@ -5039,7 +5053,7 @@ class HfModelWrapper:
                 0, 2, 1, 3
             )  # match meta-style reference which uses (batch_size, seq, n_kv_heads, head_dim)
 
-            if self.use_hf_rope:
+            if self.use_hf_rope or self.skip_qkv_permute:
                 # No transformation needed for HF-style RoPE
                 meta_ks.append(hf_k)
                 continue

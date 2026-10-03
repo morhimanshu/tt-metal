@@ -451,6 +451,19 @@ def test_model_inference(
             logger.info(comp_allclose(ref_output, tt_output_torch))
             logger.info(f"PCC: {pcc_message}")
 
+            if getattr(model_args, "logit_scale", None) is not None:
+                # Non-scale-invariant gate: PCC is blind to a missing/wrong
+                # logit_scale (a 16x magnitude error still correlates ~1.0).
+                # Compare mean absolute magnitudes with a wide band that bf16
+                # noise (~0.1%) can never trip but a scale bug cannot hide in.
+                ref_abs = ref_output.float().abs().mean()
+                tt_abs = tt_output_torch.float().abs().mean()
+                scale_ratio = (tt_abs / ref_abs.clamp_min(1e-6)).item()
+                logger.info(f"logit magnitude ratio (TT/HF mean|x|): {scale_ratio:.4f}")
+                if not 0.5 <= scale_ratio <= 2.0:
+                    logger.warning(f"Logit magnitude ratio {scale_ratio:.4f} outside [0.5, 2.0]!")
+                    all_tests_pass = False
+
             if passing:
                 logger.info("Model Passed!")
             else:
