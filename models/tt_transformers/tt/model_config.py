@@ -3640,8 +3640,9 @@ class ModelArgs:
             self.fuse_qkv = any(["qkv" in layer_name for layer_name in state_dict.keys()])
             self.fuse_mlp = any(["gate_up" in layer_name for layer_name in state_dict.keys()])
             state_dict = standardize_hf_keys(state_dict)
-            if self.use_hf_rope:
-                # For Attention: skip QKV format conversion
+            if self.use_hf_rope or self.skip_qkv_permute:
+                # For Attention: skip QKV format conversion (HF rope, or Cohere2
+                # interleaved-native Q/K which must not be reverse_permuted).
                 state_dict = convert_hf_to_meta_no_qkv_permute(state_dict, self.head_dim, self.n_heads, self.n_kv_heads)
             elif self.model_type == "cohere":
                 # Command-R rotates Q/K INTERLEAVED-native (HF modeling_cohere overrides

@@ -93,6 +93,24 @@ class LayerNorm(LightweightModule):
             mesh_mapper=ttnn.ReplicateTensorToMesh(device) if is_mesh_device else None,
         )
 
+        # TILE-layout full-width gamma for the interleaved (prefill) path.
+        # The ROW_MAJOR [1,1,dim/32,32] weight selects a program that over-allocates
+        # L1 dataflow buffers at dim 4096 (TT_THROW dataflow_buffer.cpp, 1.78 MB > 1.5 MB
+        # on [1,1,128,4096] prefill). The TILE [1,1,1,dim] layout is probe-verified
+        # to fit (see models/experimental/cohere weight_fullwidth).
+        torch_weight_tiled = state_dict[weight_name].reshape(1, 1, 1, dim)
+        if add_unit_offset:
+            torch_weight_tiled = torch_weight_tiled + 1.0
+        self.weight_tiled = ttnn.as_tensor(
+            torch_weight_tiled,
+            device=device,
+            dtype=weight_dtype,
+            layout=ttnn.TILE_LAYOUT,
+            memory_config=weight_memory_config,
+            cache_file_name=None if weight_cache_path is None else weight_cache_path / (weight_name + "_tiled"),
+            mesh_mapper=ttnn.ReplicateTensorToMesh(device) if is_mesh_device else None,
+        )
+
         if self.is_distributed:
             self.weight_distributed = ttnn.as_tensor(
                 torch_weight,
@@ -141,6 +159,8 @@ class LayerNorm(LightweightModule):
         """
         assert not self.add_unit_offset, "LayerNorm.update does not support add_unit_offset=True"
         copy_to_buffer(weight, self.weight, self.weight.dtype)
+        if getattr(self, "weight_tiled", None) is not None:
+            copy_to_buffer(weight, self.weight_tiled, self.weight_tiled.dtype)
 
         if getattr(self, "weight_distributed", None) is not None:
             partitioned = ttnn.mesh_partition(
@@ -177,7 +197,14 @@ class LayerNorm(LightweightModule):
         program_config = sharded_program_config if in_sharded else None
         memory_config = sharded_output_config if out_sharded else None
         distributed = self.is_distributed and self.is_distributed(mode)
-        weight = self.weight_distributed if distributed else self.weight
+        if distributed:
+            weight = self.weight_distributed
+        elif in_sharded:
+            # Decode sharded path keeps the ROW_MAJOR weight (matches program config).
+            weight = self.weight
+        else:
+            # Interleaved prefill path uses the TILE full-width weight to fit L1.
+            weight = getattr(self, "weight_tiled", self.weight)
 
         if in_sharded:
             assert not distributed, "Distributed LayerNorm does not support sharded inputs"
