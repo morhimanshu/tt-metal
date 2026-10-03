@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import sys
 from enum import Enum, auto
 from functools import lru_cache
 from pathlib import Path
@@ -2337,7 +2338,7 @@ class ModelArgs:
             case "attn":
                 if mode == Mode.DECODE and prefetcher is not None:
                     return {
-                        "sharded_program_config": self.create_sharded_norm_config(prefetcher_norm_grid),
+                        "sharded_program_config": self.create_sharded_norm_config(prefetcher_norm_grid, norm_type),
                         "sharded_output_config": ttnn.create_sharded_memory_config(
                             shape=(
                                 32,
@@ -2362,14 +2363,14 @@ class ModelArgs:
                     }
                 else:
                     return {
-                        "sharded_program_config": self.create_sharded_norm_config(self.attn_input_grid),
+                        "sharded_program_config": self.create_sharded_norm_config(self.attn_input_grid, norm_type),
                         "sharded_output_config": self.get_attn_input_mem_config(Mode.DECODE),
                         "output_mem_config": None,
                     }
             case "ff":
                 if mode == Mode.DECODE and prefetcher is not None:
                     return {
-                        "sharded_program_config": self.create_sharded_norm_config(prefetcher_norm_grid),
+                        "sharded_program_config": self.create_sharded_norm_config(prefetcher_norm_grid, norm_type),
                         "sharded_output_config": ttnn.create_sharded_memory_config(
                             shape=(32, self.dim // prefetcher.dynamic_worker_core_grid(32).num_cores()),
                             core_grid=prefetcher.dynamic_worker_core_grid(32),
@@ -2389,7 +2390,7 @@ class ModelArgs:
                     }
                 else:
                     return {
-                        "sharded_program_config": self.create_sharded_norm_config(self.mlp_core_grid),
+                        "sharded_program_config": self.create_sharded_norm_config(self.mlp_core_grid, norm_type),
                         "sharded_output_config": ttnn.create_sharded_memory_config(
                             (self.tile_padded_batch_rows, self.dim // self.mlp_core_grid.num_cores),
                             self.mlp_core_grid,
@@ -2402,7 +2403,7 @@ class ModelArgs:
             case "lm_head":
                 if mode == Mode.DECODE and prefetcher is not None:
                     return {
-                        "sharded_program_config": self.create_sharded_norm_config(prefetcher_norm_grid),
+                        "sharded_program_config": self.create_sharded_norm_config(prefetcher_norm_grid, norm_type),
                         "sharded_output_config": ttnn.create_sharded_memory_config(
                             shape=(32, self.dim // prefetcher.dynamic_worker_core_grid(32).num_cores()),
                             core_grid=prefetcher.dynamic_worker_core_grid(32),
@@ -2414,7 +2415,7 @@ class ModelArgs:
                     }
                 else:
                     return {
-                        "sharded_program_config": self.create_sharded_norm_config(self.lm_head_core_grid),
+                        "sharded_program_config": self.create_sharded_norm_config(self.lm_head_core_grid, norm_type),
                         "sharded_output_config": self.get_lm_head_input_mem_config(mode, None),
                         "output_mem_config": None,
                     }
@@ -4074,11 +4075,75 @@ class ModelArgs:
             overwrite_subblock_h=overwrite_subblock_h,
         )
 
-    def create_sharded_norm_config(self, grid):
+    # Static DFBs the sharded norm kernel allocates, in units of one bf16 tile. Mirrors
+    # sharded_layernorm_factory_helpers.cpp DFBSizeParams::compute() for the plain (non
+    # pre/post-all-gather) sharded case: in0, gamma, beta, x, mask-scratch and out each hold
+    # block_h * block_w tiles, gamma and beta are one row (block_w), the partial/external
+    # reduce buffers are block_h and ceil(K/block_w). RMSNorm omits beta; LayerNorm does not.
+    _SHARDED_NORM_BLOCK_TILES_RMSNORM = 5
+    _SHARDED_NORM_BLOCK_TILES_LAYERNORM = 6
+
+    # Debug aid: labels whose geometry has already been dumped this process, used by the
+    # TT_SHARDED_NORM_DEBUG_EXIT_AFTER kill switch below.
+    _sharded_norm_debug_labels = set()
+
+    def _warn_sharded_norm_l1_budget(self, grid, block_w, subblock_w, norm_type=None):
+        """Warn when a sharded norm's static DFBs cannot fit one core's L1.
+
+        The device only reports this as a TT_THROW from validate_dataflow_buffer_region, with no
+        hint which norm tripped it. Logging it here names the norm and prints the geometry, so the
+        offending config can be found before dispatch and sized against the real budget.
+
+        A LayerNorm block is one tile-row wider than the RMSNorm block it was derived from (the
+        beta buffer), so a config that fits RMSNorm can still overflow L1 once use_layernorm flips
+        the norm class. Widening the grid to shrink block_w is the fix, and the grid has to move in
+        step with the sharded memory config -- see get_norm_config.
+        """
+        block_h = self.tile_padded_batch_rows // ttnn.TILE_SIZE
+        is_layernorm = getattr(self, "use_layernorm", False)
+        block_tiles = (
+            self._SHARDED_NORM_BLOCK_TILES_LAYERNORM if is_layernorm else self._SHARDED_NORM_BLOCK_TILES_RMSNORM
+        )
+        # One bf16 tile is 32*32*2 B; L1 is 1.5 MiB on WH/BH.
+        tiles = block_tiles * block_h * block_w + 2 * block_w + block_h + grid.num_cores
+        l1_tiles = 1572864 // (ttnn.TILE_SIZE * ttnn.TILE_SIZE * 2)
+        label = norm_type or "?"
+        msg = (
+            f"sharded norm '{label}' [{'LayerNorm' if is_layernorm else 'RMSNorm'}] dim={self.dim} "
+            f"grid={grid.num_cores}c ({grid.x}x{grid.y}) block_h={block_h} block_w={block_w} "
+            f"subblock_w={subblock_w}: ~{tiles} static L1 tiles of {l1_tiles} budget"
+        )
+        if tiles > l1_tiles:
+            logger.warning(
+                f"{msg} -- OVER BUDGET, will TT_THROW 'dataflow buffers ... beyond max L1 size'. "
+                f"Shrink block_w by widening this norm's grid (keep it in step with its sharded "
+                f"memory config): block_w must be <= "
+                f"{(l1_tiles - grid.num_cores - block_h) // (block_tiles * block_h)}."
+            )
+        else:
+            logger.info(msg)
+
+        # Debug kill switch: the geometry above is all that is needed to size the config, so
+        # exit here rather than waiting for the dispatch that TT_THROWs (or a full decode).
+        # Set TT_SHARDED_NORM_DEBUG_EXIT_AFTER=<n> to dump n distinct norms before exiting
+        # (4 = attn/ff/mlp/lm_head); unset it to keep running normally.
+        exit_after = int(os.getenv("TT_SHARDED_NORM_DEBUG_EXIT_AFTER", "1"))
+        if label not in ModelArgs._sharded_norm_debug_labels:
+            ModelArgs._sharded_norm_debug_labels.add(label)
+            if len(ModelArgs._sharded_norm_debug_labels) >= exit_after:
+                logger.info(
+                    f"TT_SHARDED_NORM_DEBUG_EXIT_AFTER={exit_after} reached, exiting after norm geometry dump"
+                )
+                sys.stderr.flush()
+                sys.stdout.flush()
+                os._exit(0)
+
+    def create_sharded_norm_config(self, grid, norm_type=None):
         """Helper function to create LayerNormShardedMultiCoreProgramConfig for RMS NORM.
 
         Args:
             grid (ttnn.CoreGrid): Grid specification for the norm operation
+            norm_type (str, optional): "attn"/"ff"/"mlp"/"lm_head", for the L1 budget diagnostic.
         """
         block_w = self.dim // grid.num_cores // ttnn.TILE_SIZE
         # Find largest value <= 4 that evenly divides block_w
@@ -4087,6 +4152,7 @@ class ModelArgs:
             if block_w % subblock_w == 0:
                 break
             subblock_w -= 1
+        self._warn_sharded_norm_l1_budget(grid, block_w, subblock_w, norm_type)
         return ttnn.LayerNormShardedMultiCoreProgramConfig(
             compute_with_storage_grid_size=[grid.x, grid.y],
             subblock_w=subblock_w,
