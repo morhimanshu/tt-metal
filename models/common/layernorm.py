@@ -203,8 +203,12 @@ class LayerNorm(LightweightModule):
             # Decode sharded path keeps the ROW_MAJOR weight (matches program config).
             weight = self.weight
         else:
-            # Interleaved prefill path uses the TILE full-width weight to fit L1.
+            # Interleaved prefill path uses the TILE full-width weight to fit L1,
+            # with welford two-pass statistics (16-20% faster at width 4096,
+            # smaller footprint than tile reduction).
             weight = getattr(self, "weight_tiled", self.weight)
+            if program_config is None:
+                program_config = ttnn.LayerNormDefaultProgramConfig(use_welford=True)
 
         if in_sharded:
             assert not distributed, "Distributed LayerNorm does not support sharded inputs"
